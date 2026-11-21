@@ -46,6 +46,8 @@ jobs:
             'src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.cpp',
             'tools/xelp/xelp_moe_source_smoke.py'
           )
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          Write-Output "RUN_DIAGNOSTICS_PATH $cache"
           if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
             throw "Expected configured persistent build tree at $build"
           }
@@ -151,3 +153,11 @@ jobs:
               Write-Output 'ORIGINAL_GPU_DLL_RESTORED_SOURCE_AND_OBJECT_CACHE_RETAINED'
             }
           }
+      - name: Preserve incremental build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xelp-msbuild-${{ github.run_id }}
+          path: C:\ai\openvino-xelp\.xelp-incremental-cache\msbuild-${{ github.run_id }}.log
+          if-no-files-found: warn
+          retention-days: 14
