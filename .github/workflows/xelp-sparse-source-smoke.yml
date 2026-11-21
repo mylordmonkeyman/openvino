@@ -153,11 +153,3 @@ jobs:
               Write-Output 'ORIGINAL_GPU_DLL_RESTORED_SOURCE_AND_OBJECT_CACHE_RETAINED'
             }
           }
-      - name: Preserve incremental build diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xelp-msbuild-${{ github.run_id }}
-          path: C:\ai\openvino-xelp\.xelp-incremental-cache\msbuild-${{ github.run_id }}.log
-          if-no-files-found: warn
-          retention-days: 14
