@@ -35,7 +35,7 @@ for n in nodes:
     if n.get_type_name() != "ReduceSum" or "layers.0.mlp" not in n.get_friendly_name():
         continue
     shape = n.get_output_partial_shape(0)
-    if shape.rank().is_static() and len(shape) and shape[-1].is_static() and shape[-1].get_length() == 2048:
+    if shape.rank.is_static and len(shape) and shape[-1].is_static() and shape[-1].get_length() == 2048:
         roots.append(n)
 print("FINAL_AGGREGATION_CANDIDATES:", [n.get_friendly_name() for n in roots], flush=True)
 assert len(roots) == 1, "Could not isolate final MoE sum"
