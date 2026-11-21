@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -87,6 +88,7 @@
 #include "transformations/op_conversions/convert_grouped_matmul_to_compressed.hpp"
 #include "plugin/transformations/convert_matmul_to_fc.hpp"
 #include "plugin/transformations/fuse_moe_shared_expert.hpp"
+#include "plugin/transformations/xelp_sparse_moe.hpp"
 #include "transformations/common_optimizations/moe_op_fusion.hpp"
 #include "transformations/op_conversions/convert_gather_matmul_to_compressed.hpp"
 #include "plugin/transformations/convert_stridedslices_to_variadicsplit.hpp"
@@ -673,6 +675,17 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
                 manager.register_pass<ov::intel_gpu::FuseMoERouterScale>();
                 manager.register_pass<ov::intel_gpu::FuseMOESharedExpert>();
             }
+        }
+        // Experimental Xe-LP fallback. Reuse the existing tiled-MoE graph
+        // matcher, then lower compressed expert GEMMs to compressed Gather +
+        // ordinary GPU MatMul (no oneDNN/IMMAD/DPAS kernels required).
+        // This is intentionally opt-in pending layer-by-layer validation.
+        if (!device_info.supports_immad && std::getenv("XELP_SPARSE_INT4_MOE") != nullptr) {
+            const std::vector<ov::element::Type> xelp_woq_types{ov::element::u4, ov::element::i4};
+            manager.register_pass<ov::pass::ConvertTiledMoeBlockToGatherMatmuls>(xelp_woq_types);
+            manager.register_pass<ov::pass::ConvertGatherMatmulToGatherMatmulCompressed>(
+                std::vector<ov::element::Type>{ov::element::f32, ov::element::f16}, xelp_woq_types);
+            manager.register_pass<ov::intel_gpu::XelpGatherMatmulCompressedToGather>();
         }
         manager.register_pass<ov::pass::GatedDeltaNetFusion>();
         manager.register_pass<ov::pass::InitNodeInfo>();
