@@ -16,6 +16,8 @@ on:
 permissions:
   contents: read
 
+# The self-hosted machine uses one persistent source/build tree. Do not let
+# two runs of this workflow write to it concurrently.
 concurrency:
   group: xelp-sparse-source-smoke
   cancel-in-progress: false
@@ -25,13 +27,18 @@ jobs:
     runs-on: [self-hosted, Windows, X64, xelp, irisxe]
     timeout-minutes: 90
     steps:
-      - name: Overlay experimental C++ sources, build, test, and restore local files
+      - name: Incremental source overlay, GPU plugin build, and original-layer smoke
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = 'C:\ai\openvino-xelp'
+          $build = Join-Path $repo 'build-xelp'
           $dll = Join-Path $repo 'bin\intel64\Release\openvino_intel_gpu_plugin.dll'
-          $backup = Join-Path $env:RUNNER_TEMP "xelp-overlay-$env:GITHUB_RUN_ID"
+          $cache = Join-Path $repo '.xelp-incremental-cache'
+          $baseline = Join-Path $cache 'baseline'
+          $originalDll = Join-Path $baseline 'openvino_intel_gpu_plugin.dll'
+          $experimentalDll = Join-Path $cache 'openvino_intel_gpu_plugin.experimental.dll'
+          $buildLog = Join-Path $cache "msbuild-$env:GITHUB_RUN_ID.log"
           $files = @(
             'src/plugins/intel_gpu/src/plugin/transformations_pipeline.cpp',
             'src/plugins/intel_gpu/CMakeLists.txt',
@@ -39,29 +46,96 @@ jobs:
             'src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.cpp',
             'tools/xelp/xelp_moe_source_smoke.py'
           )
-          New-Item -ItemType Directory -Force $backup | Out-Null
-          $original = @{}
+          if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
+            throw "Expected configured persistent build tree at $build"
+          }
+          if (-not (Test-Path $dll)) {
+            throw "Expected existing GPU plugin DLL at $dll"
+          }
+          New-Item -ItemType Directory -Force $baseline | Out-Null
+          if (-not (Test-Path $originalDll)) {
+            Copy-Item $dll $originalDll -Force
+            Write-Output "BASELINE_GPU_DLL_SAVED $originalDll"
+          }
+          # Keep one-time copies of the original local sources for manual rollback.
+          # Never restore these sources at the end of an ordinary CI run: doing so
+          # dirties their timestamps and makes MSBuild recompile them next time.
           foreach ($file in $files) {
-            $target = Join-Path $repo $file
-            $original[$file] = Test-Path $target
-            if ($original[$file]) {
-              $dest = Join-Path $backup $file
-              New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
-              Copy-Item $target $dest -Force
+            $source = Join-Path $repo $file
+            $backup = Join-Path $baseline $file
+            if ((Test-Path $source) -and (-not (Test-Path $backup))) {
+              New-Item -ItemType Directory -Force (Split-Path $backup) | Out-Null
+              Copy-Item $source $backup -Force
             }
           }
-          Copy-Item $dll (Join-Path $backup 'original-gpu.dll') -Force
+
           try {
+            # Fetch and pin the trusted source revision; no full checkout, clean,
+            # reclone, or deletion of build-xelp/.obj/.lib/.pch files.
             & git -C $repo fetch --no-tags --depth 1 https://github.com/mylordmonkeyman/openvino.git "refs/heads/research/xelp-sparse-int4-moe"
             if ($LASTEXITCODE -ne 0) { throw 'Fetching trusted branch failed' }
             $actual = (& git -C $repo rev-parse FETCH_HEAD).Trim()
-            if ($actual -ne $env:GITHUB_SHA) { throw "Fetched SHA $actual does not match workflow SHA $env:GITHUB_SHA" }
+            if ($actual -ne $env:GITHUB_SHA) {
+              throw "Fetched SHA $actual does not match workflow SHA $env:GITHUB_SHA"
+            }
             $env:XELP_CI_REPO = $repo
             $env:XELP_CI_FILES = $files -join ';'
-            python -c "import os,pathlib,subprocess; repo=pathlib.Path(os.environ['XELP_CI_REPO']); paths=os.environ['XELP_CI_FILES'].split(';'); [(repo / p).parent.mkdir(parents=True,exist_ok=True) for p in paths]; [(repo / p).write_bytes(subprocess.check_output(['git','-C',str(repo),'show','FETCH_HEAD:'+p])) for p in paths]; print('OVERLAY_FILES',paths)"
-            if ($LASTEXITCODE -ne 0) { throw 'Source overlay failed' }
-            & cmake --build (Join-Path $repo 'build-xelp') --config Release --target openvino_intel_gpu_plugin --parallel 4
-            if ($LASTEXITCODE -ne 0) { throw 'Experimental plugin build failed' }
+
+            # Only change a file's bytes/mtime when the Git version differs
+            # from what was last compiled. Even CMakeLists.txt is untouched
+            # when identical, avoiding repeated project regeneration.
+            @'
+          import os
+          import pathlib
+          import subprocess
+          repo = pathlib.Path(os.environ['XELP_CI_REPO'])
+          paths = os.environ['XELP_CI_FILES'].split(';')
+          changed, unchanged = [], []
+          for relative in paths:
+              target = repo / relative
+              desired = subprocess.check_output(['git', '-C', str(repo), 'show', 'FETCH_HEAD:' + relative])
+              if target.is_file() and target.read_bytes() == desired:
+                  unchanged.append(relative)
+                  continue
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(desired)
+              changed.append(relative)
+          print('SOURCE_FILES_CHANGED', len(changed), changed, flush=True)
+          print('SOURCE_FILES_UNCHANGED', len(unchanged), unchanged, flush=True)
+          '@ | python -
+            if ($LASTEXITCODE -ne 0) { throw 'Content-aware source overlay failed' }
+
+            # Restore the *experimental* DLL with its original timestamp before
+            # asking MSBuild to inspect dependencies. The normal DLL gets
+            # restored in finally so non-experimental uses stay on the original.
+            if (Test-Path $experimentalDll) {
+              Copy-Item $experimentalDll $dll -Force
+              [System.IO.File]::SetLastWriteTimeUtc(
+                $dll, [System.IO.File]::GetLastWriteTimeUtc($experimentalDll))
+              Write-Output 'EXPERIMENTAL_GPU_DLL_CACHE_REUSED'
+            }
+
+            Write-Output "PERSISTENT_BUILD_TREE $build"
+            $start = Get-Date
+            $ErrorActionPreference = 'Continue'
+            & cmake --build $build --config Release --target openvino_intel_gpu_plugin --parallel 4 2>&1 |
+              ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+            $buildExit = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            $seconds = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
+            $compiled = @(Select-String -Path $buildLog -Pattern '^\s*[\w.\-+]+\.(cpp|cc|cxx|c)\s*$' -ErrorAction SilentlyContinue)
+            Write-Output "INCREMENTAL_BUILD_SECONDS $seconds"
+            Write-Output "COMPILED_SOURCE_LINES $($compiled.Count)"
+            if ($compiled.Count -gt 0) {
+              Write-Output ('COMPILED_SOURCE_NAMES ' + (($compiled | ForEach-Object { $_.Matches[0].Value.Trim() }) -join ', '))
+            }
+            Write-Output "BUILD_LOG $buildLog"
+            if ($buildExit -ne 0) { throw "Experimental plugin build failed: exit $buildExit" }
+
+            # Retain compiled .obj files and the experimental plugin for the
+            # next run. Use the same configured CMake build tree each time.
+            Copy-Item $dll $experimentalDll -Force
+            Write-Output 'EXPERIMENTAL_GPU_DLL_CACHE_UPDATED'
             $env:XELP_SPARSE_INT4_MOE = '1'
             Remove-Item Env:\XELP_SKIP_CONSTPROP -ErrorAction SilentlyContinue
             python (Join-Path $repo 'tools\xelp\xelp_moe_source_smoke.py')
@@ -69,11 +143,10 @@ jobs:
           }
           finally {
             Remove-Item Env:\XELP_SPARSE_INT4_MOE -ErrorAction SilentlyContinue
-            foreach ($file in $files) {
-              $target = Join-Path $repo $file
-              if ($original[$file]) { Copy-Item (Join-Path $backup $file) $target -Force }
-              elseif (Test-Path $target) { Remove-Item $target -Force }
+            # Restore only the runtime DLL. Do NOT touch staged source files,
+            # compiler object files, generated MSBuild projects, or CMake cache.
+            if (Test-Path $originalDll) {
+              Copy-Item $originalDll $dll -Force
+              Write-Output 'ORIGINAL_GPU_DLL_RESTORED_SOURCE_AND_OBJECT_CACHE_RETAINED'
             }
-            Copy-Item (Join-Path $backup 'original-gpu.dll') $dll -Force
-            Write-Output 'LOCAL_SOURCES_AND_GPU_DLL_RESTORED'
           }
