@@ -74,8 +74,10 @@ jobs:
           try {
             # Fetch and pin the trusted source revision; no full checkout, clean,
             # reclone, or deletion of build-xelp/.obj/.lib/.pch files.
-            & git -C $repo fetch --no-tags --depth 1 https://github.com/mylordmonkeyman/openvino.git "refs/heads/research/xelp-sparse-int4-moe"
-            if ($LASTEXITCODE -ne 0) { throw 'Fetching trusted branch failed' }
+            # Fetch the exact triggering commit, not the moving branch tip.
+            # Otherwise a queued job fails SHA verification after a newer push.
+            & git -C $repo fetch --no-tags --depth 1 https://github.com/mylordmonkeyman/openvino.git $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { throw 'Fetching pinned workflow commit failed' }
             $actual = (& git -C $repo rev-parse FETCH_HEAD).Trim()
             if ($actual -ne $env:GITHUB_SHA) {
               throw "Fetched SHA $actual does not match workflow SHA $env:GITHUB_SHA"
