@@ -1,0 +1,77 @@
+name: Xe-LP sparse INT4 source smoke
+
+on:
+  push:
+    branches:
+      - research/xelp-sparse-int4-moe
+    paths:
+      - .github/workflows/xelp-sparse-source-smoke.yml
+      - src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.cpp
+      - src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.hpp
+      - src/plugins/intel_gpu/src/plugin/transformations_pipeline.cpp
+      - tools/xelp/xelp_moe_source_smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xelp-sparse-source-smoke
+  cancel-in-progress: false
+
+jobs:
+  xe-lp-sparse-source-smoke:
+    runs-on: [self-hosted, Windows, X64, xelp, irisxe]
+    timeout-minutes: 90
+    steps:
+      - name: Overlay experimental C++ sources, build, test, and restore local files
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = 'C:\ai\openvino-xelp'
+          $dll = Join-Path $repo 'bin\intel64\Release\openvino_intel_gpu_plugin.dll'
+          $backup = Join-Path $env:RUNNER_TEMP "xelp-overlay-$env:GITHUB_RUN_ID"
+          $files = @(
+            'src/plugins/intel_gpu/src/plugin/transformations_pipeline.cpp',
+            'src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.hpp',
+            'src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.cpp',
+            'tools/xelp/xelp_moe_source_smoke.py'
+          )
+          New-Item -ItemType Directory -Force $backup | Out-Null
+          $original = @{}
+          foreach ($file in $files) {
+            $target = Join-Path $repo $file
+            $original[$file] = Test-Path $target
+            if ($original[$file]) {
+              $dest = Join-Path $backup $file
+              New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+              Copy-Item $target $dest -Force
+            }
+          }
+          Copy-Item $dll (Join-Path $backup 'original-gpu.dll') -Force
+          try {
+            & git -C $repo fetch --no-tags --depth 1 https://github.com/mylordmonkeyman/openvino.git "refs/heads/research/xelp-sparse-int4-moe"
+            if ($LASTEXITCODE -ne 0) { throw 'Fetching trusted branch failed' }
+            $actual = (& git -C $repo rev-parse FETCH_HEAD).Trim()
+            if ($actual -ne $env:GITHUB_SHA) { throw "Fetched SHA $actual does not match workflow SHA $env:GITHUB_SHA" }
+            $env:XELP_CI_REPO = $repo
+            $env:XELP_CI_FILES = $files -join ';'
+            python -c "import os,pathlib,subprocess; repo=pathlib.Path(os.environ['XELP_CI_REPO']); paths=os.environ['XELP_CI_FILES'].split(';'); [(repo / p).parent.mkdir(parents=True,exist_ok=True) for p in paths]; [(repo / p).write_bytes(subprocess.check_output(['git','-C',str(repo),'show','FETCH_HEAD:'+p])) for p in paths]; print('OVERLAY_FILES',paths)"
+            if ($LASTEXITCODE -ne 0) { throw 'Source overlay failed' }
+            & cmake --build (Join-Path $repo 'build-xelp') --config Release --target openvino_intel_gpu_plugin --parallel 4
+            if ($LASTEXITCODE -ne 0) { throw 'Experimental plugin build failed' }
+            $env:XELP_SPARSE_INT4_MOE = '1'
+            Remove-Item Env:\XELP_SKIP_CONSTPROP -ErrorAction SilentlyContinue
+            python (Join-Path $repo 'tools\xelp\xelp_moe_source_smoke.py')
+            if ($LASTEXITCODE -ne 0) { throw 'Original-layer sparse MoE smoke failed' }
+          }
+          finally {
+            Remove-Item Env:\XELP_SPARSE_INT4_MOE -ErrorAction SilentlyContinue
+            foreach ($file in $files) {
+              $target = Join-Path $repo $file
+              if ($original[$file]) { Copy-Item (Join-Path $backup $file) $target -Force }
+              elseif (Test-Path $target) { Remove-Item $target -Force }
+            }
+            Copy-Item (Join-Path $backup 'original-gpu.dll') $dll -Force
+            Write-Output 'LOCAL_SOURCES_AND_GPU_DLL_RESTORED'
+          }
