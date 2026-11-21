@@ -9,6 +9,7 @@ on:
       - src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.cpp
       - src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.hpp
       - src/plugins/intel_gpu/src/plugin/transformations_pipeline.cpp
+      - src/plugins/intel_gpu/CMakeLists.txt
       - tools/xelp/xelp_moe_source_smoke.py
   workflow_dispatch:
 
@@ -33,6 +34,7 @@ jobs:
           $backup = Join-Path $env:RUNNER_TEMP "xelp-overlay-$env:GITHUB_RUN_ID"
           $files = @(
             'src/plugins/intel_gpu/src/plugin/transformations_pipeline.cpp',
+            'src/plugins/intel_gpu/CMakeLists.txt',
             'src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.hpp',
             'src/plugins/intel_gpu/src/plugin/transformations/xelp_sparse_moe.cpp',
             'tools/xelp/xelp_moe_source_smoke.py'

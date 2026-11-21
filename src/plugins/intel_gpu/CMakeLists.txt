@@ -134,6 +134,11 @@ add_subdirectory(src/graph)
 
 file(GLOB_RECURSE PLUGIN_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/include/intel_gpu/plugin/*.hpp)
 
+# Xe-LP experiment: explicitly register the new source, including when adding
+# it to an existing configured build (the GLOB above lacks CONFIGURE_DEPENDS).
+list(APPEND PLUGIN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/transformations/xelp_sparse_moe.cpp")
+list(REMOVE_DUPLICATES PLUGIN_SOURCES)
+
 ov_add_plugin(NAME ${TARGET_NAME}
               DEVICE_NAME "GPU"
               SOURCES ${PLUGIN_SOURCES}
