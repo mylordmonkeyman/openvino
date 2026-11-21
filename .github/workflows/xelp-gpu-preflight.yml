@@ -1,0 +1,39 @@
+name: Xe-LP GPU preflight
+
+on:
+  push:
+    branches:
+      - research/xelp-sparse-int4-moe
+    paths:
+      - .github/workflows/xelp-gpu-preflight.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Verify local Iris Xe and custom OpenVINO plugin
+    runs-on: [self-hosted, Windows, X64, xelp, irisxe]
+    timeout-minutes: 15
+    steps:
+      - name: Check build, model, and GPU
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = 'C:\ai\openvino-xelp\bin\intel64\Release\openvino_intel_gpu_plugin.dll'
+          $model = 'C:\ai\models\OpenVINO\Qwen3.6-35B-A3B-int4-ov\openvino_language_model.xml'
+          $bin = 'C:\ai\openvino-xelp\bin\intel64\Release'
+          Write-Output "Windows runner: $env:RUNNER_NAME"
+          Write-Output "Custom plugin present: $(Test-Path $dll)"
+          Write-Output "Model IR present: $(Test-Path $model)"
+          Write-Output "Python: $((Get-Command python -ErrorAction Stop).Source)"
+          Write-Output "CMake: $((Get-Command cmake -ErrorAction SilentlyContinue).Source)"
+          Write-Output "MSVC on PATH: $([bool](Get-Command cl.exe -ErrorAction SilentlyContinue))"
+          if (-not (Test-Path $dll)) { throw "Built GPU plugin not found at $dll" }
+          if (-not (Test-Path $model)) { throw "Model IR not found at $model" }
+          $env:OPENVINO_CUSTOM_GPU_DLL = $dll
+          $env:PATH = "$bin;$env:PATH"
+          python -c "import os; import openvino as ov; print('OpenVINO:', ov.get_version()); core=ov.Core(); core.register_plugin(os.environ['OPENVINO_CUSTOM_GPU_DLL'], 'XELP_GPU'); print('Custom plugin device:', core.get_property('XELP_GPU', 'FULL_DEVICE_NAME')); print('Custom plugin memory:', core.get_property('XELP_GPU', 'GPU_MEMORY_STATISTICS'))"
+          if ($LASTEXITCODE -ne 0) { throw "Custom OpenVINO GPU plugin probe failed" }
+          Write-Output 'XELP_PREFLIGHT_SUCCESS'
