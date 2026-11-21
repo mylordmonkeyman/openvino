@@ -37,3 +37,5 @@ jobs:
           python -c "import os; import openvino as ov; print('OpenVINO:', ov.get_version()); core=ov.Core(); core.register_plugin(os.environ['OPENVINO_CUSTOM_GPU_DLL'], 'XELP_GPU'); print('Custom plugin device:', core.get_property('XELP_GPU', 'FULL_DEVICE_NAME')); print('Custom plugin memory:', core.get_property('XELP_GPU', 'GPU_MEMORY_STATISTICS'))"
           if ($LASTEXITCODE -ne 0) { throw "Custom OpenVINO GPU plugin probe failed" }
           Write-Output 'XELP_PREFLIGHT_SUCCESS'
+
+# Workflow changes are restricted to our trusted development branch.
