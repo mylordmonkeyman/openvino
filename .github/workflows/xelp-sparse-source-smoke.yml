@@ -48,6 +48,16 @@ jobs:
           )
           New-Item -ItemType Directory -Force $cache | Out-Null
           Write-Output "RUN_DIAGNOSTICS_PATH $cache"
+          # GitHub's archived logs can be unavailable after a Windows runner
+          # disconnects. Recover the previous run's durable MSBuild transcript
+          # directly from the self-hosted machine on its next successful pickup.
+          $priorLogs = @(Get-ChildItem -LiteralPath $cache -Filter 'msbuild-*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 2)
+          foreach ($prior in $priorLogs) {
+            Write-Output "PREVIOUS_BUILD_LOG_BEGIN $($prior.FullName) BYTES=$($prior.Length)"
+            Get-Content -LiteralPath $prior.FullName -Tail 100 | ForEach-Object { Write-Output "PREVIOUS_BUILD_LOG $_" }
+            Write-Output "PREVIOUS_BUILD_LOG_END $($prior.FullName)"
+          }
           if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
             throw "Expected configured persistent build tree at $build"
           }
