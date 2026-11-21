@@ -84,7 +84,7 @@ jobs:
             # Only change a file's bytes/mtime when the Git version differs
             # from what was last compiled. Even CMakeLists.txt is untouched
             # when identical, avoiding repeated project regeneration.
-            @'
+            $overlayScript = @'
           import os
           import pathlib
           import subprocess
@@ -102,7 +102,8 @@ jobs:
               changed.append(relative)
           print('SOURCE_FILES_CHANGED', len(changed), changed, flush=True)
           print('SOURCE_FILES_UNCHANGED', len(unchanged), unchanged, flush=True)
-          '@ | python -
+          '@
+            $overlayScript | python -
             if ($LASTEXITCODE -ne 0) { throw 'Content-aware source overlay failed' }
 
             # Restore the *experimental* DLL with its original timestamp before
